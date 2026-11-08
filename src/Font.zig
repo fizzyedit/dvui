@@ -335,8 +335,8 @@ pub fn textSizeEx(self: Font, text: []const u8, opts: TextSizeOptions) Size {
     // might give us a slightly smaller font
     const fce = dvui.fontCacheGet(sized_font) catch return .{ .w = 10, .h = 10 };
 
-    // this must be synced with dvui.renderText()
-    const target_fraction = if (cw.snap_to_pixels) 1.0 / ss else self.size / fce.em_height;
+    // this must be synced with dvui.renderText(): Font.logicalPerUnit(fce)
+    const target_fraction = self.logicalPerUnit(fce);
 
     var options = opts;
     if (opts.max_width) |mwidth| {
@@ -348,15 +348,21 @@ pub fn textSizeEx(self: Font, text: []const u8, opts: TextSizeOptions) Size {
     var s = fce.textSizeRaw(cw.gpa, text, options) catch return .{ .w = 10, .h = 10 };
 
     if (opts.ascent_out) |ao| {
-        ao.* = fce.ascent;
+        ao.* = fce.ascent_units;
         if (self.line_height_factor < 1.0) {
-            ao.* = @round(ao.* * self.line_height_factor);
+            ao.* *= self.line_height_factor;
         }
         ao.* *= target_fraction;
     }
 
     // convert size back from font units
     return s.scale(target_fraction, Size);
+}
+
+/// Convert raw font metrics to logical points at this font's requested size.
+pub fn logicalPerUnit(self: Font, fce: *const Cache.Entry) f32 {
+    // Use the unscaled M outline so display scale and raster rounding cannot affect layout.
+    return self.size / fce.m_height_units;
 }
 
 pub const Cache = @import("FontCache.zig");
@@ -528,7 +534,86 @@ test "DOCIMG synthetic bold from a family with only a regular face" {
     try dvui.testing.settle(T.frame);
     try t.saveImage(T.frame, null, "Font-synthetic-bold.png");
 
-    // synthetic bold should be wider but not taller
-    try std.testing.expect(T.synthetic.w > T.regular.w);
+    // Synthetic bold preserves the underlying font advances.
+    try std.testing.expectEqual(T.regular.w, T.synthetic.w);
     try std.testing.expectEqual(T.regular.h, T.synthetic.h);
+}
+
+test "a string has one size at every scale" {
+    var t = try dvui.testing.init(.{});
+    defer t.deinit();
+    const strings = [_][]const u8{ "Hello World", "AVAWAY", "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii", "A quick brown fox.", "jazz café" };
+    const fonts = [_]Font{ .find(.{ .family = "Vera Sans", .size = 13.3 }), .theme(.body) };
+    for (fonts) |font| {
+        for (strings) |text| {
+            const expected = font.textSize(text);
+            for ([_]f32{ 1, 2, 2.75, 3 }) |scale| {
+                t.window.content_scale = scale;
+                t.window.natural_scale = scale;
+                for ([_]bool{ true, false }) |snap| {
+                    t.window.snap_to_pixels = snap;
+                    const actual = font.textSize(text);
+                    try std.testing.expectApproxEqAbs(expected.w, actual.w, 0.01);
+                    try std.testing.expectApproxEqAbs(expected.h, actual.h, 0.01);
+                }
+            }
+        }
+    }
+}
+
+test "wrapping does not depend on the snap mode" {
+    var t = try dvui.testing.init(.{});
+    defer t.deinit();
+    t.window.content_scale = 2.75;
+    t.window.natural_scale = 2.75;
+    for ([_]Font{ .find(.{ .family = "Vera Sans", .size = 13.3 }), .theme(.body) }) |font| {
+        var snapped: usize = 0;
+        var unsnapped: usize = 0;
+        t.window.snap_to_pixels = true;
+        _ = font.textSizeEx("AVAWAY Hello world AVAWAY Hello world AVAWAY Hello world AVAWAY Hello world AVAWAY Hello world AVAWAY Hello world AVAWAY Hello world AVAWAY Hello world AVAWAY Hello world AVAWAY Hello world AVAWAY Hello world AVAWAY Hello world AVAWAY Hello world AVAWAY Hello world AVAWAY Hello world AVAWAY Hello world AVAWAY Hello world AVAWAY Hello world AVAWAY Hello world AVAWAY Hello world ", .{ .max_width = 180, .end_idx = &snapped });
+        t.window.snap_to_pixels = false;
+        _ = font.textSizeEx("AVAWAY Hello world AVAWAY Hello world AVAWAY Hello world AVAWAY Hello world AVAWAY Hello world AVAWAY Hello world AVAWAY Hello world AVAWAY Hello world AVAWAY Hello world AVAWAY Hello world AVAWAY Hello world AVAWAY Hello world AVAWAY Hello world AVAWAY Hello world AVAWAY Hello world AVAWAY Hello world AVAWAY Hello world AVAWAY Hello world AVAWAY Hello world AVAWAY Hello world ", .{ .max_width = 180, .end_idx = &unsnapped });
+        try std.testing.expectEqual(snapped, unsnapped);
+    }
+}
+
+test "drawn glyphs follow the pen" {
+    if (dvui.backend.kind != .testing) return error.SkipZigTest;
+    var t = try dvui.testing.init(.{ .window_size = .{ .w = 2000, .h = 200 } });
+    defer t.deinit();
+    const Capture = struct {
+        var vertices: [160]dvui.Vertex = undefined;
+        var count: usize = 0;
+        fn capture(v: []const dvui.Vertex) void {
+            count = @min(v.len, vertices.len);
+            @memcpy(vertices[0..count], v[0..count]);
+        }
+    };
+    t.backend.triangle_capture = Capture.capture;
+    defer t.backend.triangle_capture = null;
+    t.window.content_scale = 2.75;
+    t.window.natural_scale = 2.75;
+    t.window.snap_to_pixels = true;
+    for ([_]Font{ .find(.{ .family = "Vera Sans", .size = 10 }), Font.theme(.body).withSize(10) }) |font| {
+        const scale: f32 = 2.75;
+        const fce = try dvui.fontCacheGet(font.withSize(font.size * scale));
+        const gi = try fce.glyphInfoGet(t.window.gpa, 'H');
+        const advance = gi.advance_units * font.logicalPerUnit(fce);
+        Capture.count = 0;
+        t.window.render_target.rendering = true;
+        try dvui.renderText(.{
+            .font = font,
+            .text = "HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHf",
+            .rs = .{ .r = .{ .w = 2000, .h = 100 }, .s = scale },
+            .color = .white,
+        });
+        t.window.render_target.rendering = false;
+        try std.testing.expectEqual(@as(usize, 160), Capture.count);
+        for (0..40) |i| {
+            const glyph = try fce.glyphInfoGet(t.window.gpa, if (i == 39) 'f' else 'H');
+            const pen = @as(f32, @floatFromInt(i)) * advance * scale;
+            try std.testing.expectApproxEqAbs(pen, Capture.vertices[i * 4].pos.x - glyph.leftBearing, 0.501);
+        }
+        try std.testing.expectApproxEqAbs(font.textSize("HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHf").w * scale, Capture.vertices[157].pos.x, 1.0);
+    }
 }

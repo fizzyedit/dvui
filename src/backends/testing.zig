@@ -8,6 +8,9 @@ arena: std.mem.Allocator = undefined,
 size: dvui.Size.Natural,
 size_pixels: dvui.Size.Physical,
 time: i128 = 0,
+
+/// Optional synchronous observer for tests of submitted geometry.
+triangle_capture: ?*const fn ([]const dvui.Vertex) void = null,
 clipboard: ?[]const u8 = null,
 
 pub const kind: dvui.enums.Backend = .testing;
@@ -81,7 +84,9 @@ pub fn contentScale(_: *TestingBackend) f32 {
 /// clipped to to clipr (if given).  Vertex positions and clipr are in
 /// physical pixels.  If texture is given, the vertexes uv coords are
 /// normalized (0-1).
-pub fn drawClippedTriangles(_: *TestingBackend, _: ?dvui.Texture, _: []const dvui.Vertex, _: []const dvui.Vertex.Index, _: ?dvui.Rect.Physical) !void {}
+pub fn drawClippedTriangles(self: *TestingBackend, _: ?dvui.Texture, vertices: []const dvui.Vertex, _: []const dvui.Vertex.Index, _: ?dvui.Rect.Physical) !void {
+    if (self.triangle_capture) |capture| capture(vertices);
+}
 
 /// Create a texture from the given pixels in RGBA.  The returned
 /// pointer is what will later be passed to drawClippedTriangles.

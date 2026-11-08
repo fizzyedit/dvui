@@ -107,6 +107,10 @@ pub fn getOrCreate(self: *Cache, gpa: std.mem.Allocator, font: Font) std.mem.All
 pub const Entry = struct {
     face: if (impl == .FreeType) c.FT_Face else c.stbtt_fontinfo,
     name: []const u8, // gpa
+    m_height_units: f32 = 0,
+    units_per_em_scale: f32 = 0, // nominal points per font unit
+    height_units: f32 = 0,
+    ascent_units: f32 = 0,
     scaleFactor: f32,
     height: f32, // ascender - descender
     ascent: f32, // ascender (integer)
@@ -120,6 +124,7 @@ pub const Entry = struct {
     const ascii_start = 32;
 
     const GlyphInfo = struct {
+        advance_units: f32,
         advance: f32, // horizontal distance to move the pen
         leftBearing: f32, // horizontal distance from pen to glyph pixels left edge (integer)
         topBearing: f32, // vertical distance from pen to glyph pixels top edge (integer)
@@ -151,7 +156,10 @@ pub const Entry = struct {
                 return Error.FontError;
             };
 
-            // "pixel size" for freetype doesn't actually mean you'll get that height, it's more like using pts
+            FreeType.intToError(c.FT_Load_Char(face, 'M', c.FT_LOAD_NO_SCALE)) catch return Error.FontError;
+            const m_height_units: f32 = @floatFromInt(face.*.glyph.*.metrics.height);
+
+            // pixel size for freetype doesn't actually mean you'll get that height, it's more like using pts
             // so we search for a font that has a height <= font.size
             var pixel_size = @as(u32, @trunc(@max(min_pixel_size, @floor(font.size))));
             pixel_size += 20;
@@ -169,6 +177,10 @@ pub const Entry = struct {
                 const descent = descender * ss;
 
                 var entry: Entry = .{
+                    .m_height_units = m_height_units,
+                    .units_per_em_scale = font.size / m_height_units,
+                    .height_units = @floatFromInt(face.*.ascender - face.*.descender),
+                    .ascent_units = @floatFromInt(face.*.ascender),
                     .face = face,
                     .name = fname,
                     .scaleFactor = 1.0, // not used with freetype
@@ -223,6 +235,10 @@ pub const Entry = struct {
                 dvui.log.warn("Font.Cache.Entry.init() stbtt error getting M font {s} size {d}\n", .{ fname, font.size });
                 return error.FontError;
             }
+            entry.m_height_units = M.h;
+            entry.units_per_em_scale = font.size / M.h;
+            entry.height_units = @floatFromInt(face_ascent - face_descent);
+            entry.ascent_units = @floatFromInt(face_ascent);
             entry.scaleFactor = @max(min_pixel_size, @floor(font.size)) / M.h;
             const ascender = entry.scaleFactor * @as(f32, @floatFromInt(face_ascent));
             const descender = entry.scaleFactor * @as(f32, @floatFromInt(face_descent));
@@ -462,6 +478,8 @@ pub const Entry = struct {
                 dvui.log.warn("glyphInfoGet freetype error {any} font {s} codepoint {d}\n", .{ err, self.name, codepoint });
                 return Error.FontError;
             };
+            const advance_units = @as(f32, @floatFromInt(self.face.*.glyph.*.linearHoriAdvance)) / 65536.0 /
+                (@as(f32, @floatFromInt(self.face.*.size.*.metrics.x_scale)) / 65536.0 / 64.0);
             if (self.embolden) c.FT_GlyphSlot_Embolden(self.face.*.glyph);
 
             const m = self.face.*.glyph.*.metrics;
@@ -479,6 +497,7 @@ pub const Entry = struct {
             // bitmap assumes pen position is at a pixel boundary.
 
             break :blk .{
+                .advance_units = advance_units,
                 .advance = adv,
                 .leftBearing = @floor(minx),
                 .topBearing = @floor(miny),
@@ -509,6 +528,7 @@ pub const Entry = struct {
             // x0/y0, and ceil x1/y1)
 
             break :blk .{
+                .advance_units = @floatFromInt(advanceWidth),
                 .advance = adv + k,
                 .leftBearing = @floor(x0),
                 .topBearing = @ceil(y1),
@@ -526,16 +546,16 @@ pub const Entry = struct {
             const index1 = c.FT_Get_Char_Index(fce.face, codepoint1);
             const index2 = c.FT_Get_Char_Index(fce.face, codepoint2);
             var k: c.FT_Vector = undefined;
-            FreeType.intToError(c.FT_Get_Kerning(fce.face, index1, index2, c.FT_KERNING_DEFAULT, &k)) catch |err| {
+            FreeType.intToError(c.FT_Get_Kerning(fce.face, index1, index2, c.FT_KERNING_UNSCALED, &k)) catch |err| {
                 dvui.log.warn("renderText freetype error {any} trying to FT_Get_Kerning font {s} codepoints {d} {d}\n", .{ err, fce.name, codepoint1, codepoint2 });
                 k.x = 0;
                 k.y = 0;
             };
 
-            return @as(f32, @floatFromInt(k.x)) / 64.0;
+            return @floatFromInt(k.x);
         } else {
             const kern_adv: c_int = c.stbtt_GetCodepointKernAdvance(&fce.face, @as(c_int, @intCast(codepoint1)), @as(c_int, @intCast(codepoint2)));
-            return fce.scaleFactor * @as(f32, @floatFromInt(kern_adv));
+            return @floatFromInt(kern_adv);
         }
     }
 
@@ -551,14 +571,10 @@ pub const Entry = struct {
     ) std.mem.Allocator.Error!Size {
         const mwidth = opts.max_width orelse dvui.max_float_safe;
 
-        const snap = dvui.snapToPixels();
         var x: f32 = 0;
-        var minx: f32 = 0;
         var maxx: f32 = 0;
-        var miny: f32 = 0;
-        var maxy: f32 = self.height;
         var tw: f32 = 0;
-        var th: f32 = self.height;
+        const th: f32 = self.height_units;
 
         var ei: usize = 0;
         var nearest_break: bool = false;
@@ -587,7 +603,7 @@ pub const Entry = struct {
 
             if (kerning and last_codepoint != 0 and i >= next_kern_byte) {
                 const kk = self.kern(last_codepoint, codepoint);
-                x += if (snap) @round(kk) else kk;
+                x += kk;
 
                 if (opts.kern_in) |ki| {
                     if (next_kern_idx < ki.len) {
@@ -612,20 +628,14 @@ pub const Entry = struct {
             i += cplen;
             last_codepoint = codepoint;
 
-            const adv = if (snap) @round(gi.advance) else gi.advance;
+            const adv = gi.advance_units;
+            maxx = x + adv;
 
-            minx = @min(minx, x + gi.leftBearing);
-            maxx = @max(maxx, x + gi.leftBearing + gi.w);
-            maxx = @max(maxx, x + adv);
-
-            miny = @min(miny, self.ascent - gi.topBearing);
-            maxy = @max(maxy, self.ascent - gi.topBearing + gi.h);
-
-            if ((maxx - minx) > mwidth) {
+            if ((maxx) > mwidth) {
                 switch (opts.end_metric) {
                     .before => break, // went too far
                     .nearest => {
-                        if ((maxx - minx) - mwidth >= mwidth - tw) {
+                        if ((maxx) - mwidth >= mwidth - tw) {
                             break; // current one is closest
                         } else {
                             // get the next glyph and then break
@@ -639,8 +649,7 @@ pub const Entry = struct {
             ei += cplen;
 
             // update space taken by glyph
-            tw = maxx - minx;
-            th = maxy - miny;
+            tw = maxx;
             x += adv;
 
             if (nearest_break) break;

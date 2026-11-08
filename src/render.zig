@@ -198,13 +198,10 @@ pub fn renderText(opts: TextOptions) Backend.GenericError!void {
 
     // might get a slightly smaller font
     var fce = try cw.fonts.getOrCreate(cw.gpa, sized_font);
-    var fce_ascent = fce.ascent;
-    if (opts.font.line_height_factor < 1.0) {
-        fce_ascent = @round(fce_ascent * opts.font.line_height_factor);
-    }
-
-    // this must be synced with Font.textSizeEx()
-    const target_fraction = if (cw.snap_to_pixels) 1.0 else target_size / fce.em_height;
+    // this must be synced with Font.textSizeEx(): Font.logicalPerUnit(fce)
+    const logical_per_unit = opts.font.logicalPerUnit(fce);
+    const fce_ascent = fce.ascent_units * logical_per_unit * opts.rs.s *
+        @min(1.0, opts.font.line_height_factor);
 
     // make sure the cache has all the glyphs we need
     if (opts.kern_in == null) {
@@ -246,6 +243,9 @@ pub fn renderText(opts: TextOptions) Backend.GenericError!void {
         start.y = @round(start.y);
     }
 
+    var pen: f32 = 0;
+    var baseline = start.y + fce_ascent;
+    if (cw.snap_to_pixels) baseline = @round(baseline);
     var x = start.x;
     var max_x = start.x;
 
@@ -290,11 +290,11 @@ pub fn renderText(opts: TextOptions) Backend.GenericError!void {
         // inside rendering, it doesn't affect text sizing.
         const halfspace = (codepoint == '\n' or codepoint == '\r');
         var gi = try fce.glyphInfoGetOrReplacement(cw.gpa, if (halfspace) ' ' else codepoint);
-        if (halfspace) gi.advance = @round(gi.advance * 0.5);
+        if (halfspace) gi.advance_units *= 0.5;
 
         if (kerning and last_codepoint != 0 and i >= next_kern_byte) {
             const kk = fce.kern(last_codepoint, codepoint);
-            x += target_fraction * (if (cw.snap_to_pixels) @round(kk) else kk);
+            pen += kk * logical_per_unit;
 
             if (opts.kern_in) |ki| {
                 if (next_kern_idx < ki.len) {
@@ -307,21 +307,10 @@ pub fn renderText(opts: TextOptions) Backend.GenericError!void {
         i += cplen;
         last_codepoint = codepoint;
 
-        const adv = if (cw.snap_to_pixels) @round(gi.advance) else gi.advance;
-        if (x + gi.leftBearing * target_fraction < start.x) {
-            // Glyph extends left of the start, like the first letter being
-            // "j", which has a negative left bearing.
-            //
-            // Shift the whole line over so it starts at x_start.  textSize()
-            // includes this extra space.
-
-            //std.debug.print("moving x from {d} to {d}\n", .{ x, x_start - gi.leftBearing * target_fraction });
-            start.x -= gi.leftBearing * target_fraction;
-            x = start.x;
-        }
-
-        const nextx = x + adv * target_fraction;
-        const leftx = x + gi.leftBearing * target_fraction;
+        x = start.x + pen * opts.rs.s;
+        const nextx = start.x + (pen + gi.advance_units * logical_per_unit) * opts.rs.s;
+        const origin = if (cw.snap_to_pixels) @round(x) else x;
+        const leftx = origin + gi.leftBearing;
 
         if (sel) {
             bytes_seen += std.unicode.utf8CodepointSequenceLength(codepoint) catch unreachable;
@@ -363,7 +352,7 @@ pub fn renderText(opts: TextOptions) Backend.GenericError!void {
             var v: Vertex = undefined;
 
             v.pos.x = leftx;
-            v.pos.y = start.y + (fce_ascent - gi.topBearing) * target_fraction;
+            v.pos.y = baseline - gi.topBearing;
             v.col = if (opts.gradient) |g| .fromColor(g.sample(gradient_bounds, v.pos).opacity(cw.alpha)) else col;
             v.uv = gi.uv;
             builder.appendVertex(v);
@@ -377,13 +366,13 @@ pub fn renderText(opts: TextOptions) Backend.GenericError!void {
                 //log.debug("{d} pad {d} left {d} top {d} w {d} h {d} advance {d}", .{ bytes_seen, pad, gi.f2_leftBearing, gi.f2_topBearing, gi.f2_w, gi.f2_h, gi.f2_advance });
             }
 
-            v.pos.x = x + (gi.leftBearing + gi.w) * target_fraction;
+            v.pos.x = origin + gi.leftBearing + gi.w;
             max_x = v.pos.x;
             v.uv[0] = gi.uv[0] + gi.w / atlas_size.w;
             if (opts.gradient) |g| v.col = .fromColor(g.sample(gradient_bounds, v.pos).opacity(cw.alpha));
             builder.appendVertex(v);
 
-            v.pos.y = start.y + (fce_ascent - gi.topBearing + gi.h) * target_fraction;
+            v.pos.y = baseline - gi.topBearing + gi.h;
             sel_max_y = @max(sel_max_y, v.pos.y);
             v.uv[1] = gi.uv[1] + gi.h / atlas_size.h;
             if (opts.gradient) |g| v.col = .fromColor(g.sample(gradient_bounds, v.pos).opacity(cw.alpha));
@@ -401,13 +390,14 @@ pub fn renderText(opts: TextOptions) Backend.GenericError!void {
             });
         }
 
+        pen += gi.advance_units * logical_per_unit;
         x = nextx;
     }
 
     if (opts.background_color) |bgcol| {
         opts.rs.r.toPoint(.{
             .x = max_x,
-            .y = @max(sel_max_y, opts.rs.r.y + fce.height * target_fraction * opts.font.line_height_factor),
+            .y = @max(sel_max_y, opts.rs.r.y + fce.height_units * logical_per_unit * opts.rs.s * opts.font.line_height_factor),
         }).fill(.{}, .{ .color = .{ .color = bgcol }, .fade = 0 });
     }
 
@@ -415,7 +405,7 @@ pub fn renderText(opts: TextOptions) Backend.GenericError!void {
         Rect.Physical.fromPoint(.{ .x = sel_start_x, .y = start.y })
             .toPoint(.{
                 .x = sel_end_x,
-                .y = @max(sel_max_y, start.y + fce.height * target_fraction * opts.font.line_height_factor),
+                .y = @max(sel_max_y, start.y + fce.height_units * logical_per_unit * opts.rs.s * opts.font.line_height_factor),
             })
             .fill(.{}, .{ .color = .{ .color = opts.sel_color orelse dvui.themeGet().focus }, .fade = 0 });
     }
