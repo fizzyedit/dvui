@@ -612,8 +612,38 @@ test "drawn glyphs follow the pen" {
         for (0..40) |i| {
             const glyph = try fce.glyphInfoGet(t.window.gpa, if (i == 39) 'f' else 'H');
             const pen = @as(f32, @floatFromInt(i)) * advance * scale;
-            try std.testing.expectApproxEqAbs(pen, Capture.vertices[i * 4].pos.x - glyph.leftBearing, 0.501);
+            try std.testing.expectApproxEqAbs(pen, Capture.vertices[i * 4].pos.x - glyph.leftBearing, 0.5);
         }
         try std.testing.expectApproxEqAbs(font.textSize("HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHf").w * scale, Capture.vertices[157].pos.x, 1.0);
+    }
+
+    t.window.snap_to_pixels = false;
+    for ([_]Font{ .find(.{ .family = "Vera Sans", .size = 13.3 }), Font.theme(.body).withSize(13.3) }) |font| {
+        for ([_]f32{ 1, 2.75 }) |scale| {
+            const fce = try dvui.fontCacheGet(font.withSize(font.size * scale));
+            const glyph = try fce.glyphInfoGet(t.window.gpa, 'M');
+            const fraction = font.size * scale / fce.em_height;
+            Capture.count = 0;
+            t.window.render_target.rendering = true;
+            try dvui.renderText(.{
+                .font = font,
+                .text = "MM",
+                .rs = .{ .r = .{ .w = 2000, .h = 100 }, .s = scale },
+                .color = .white,
+                .kerning = false,
+            });
+            t.window.render_target.rendering = false;
+            try std.testing.expectEqual(@as(usize, 8), Capture.count);
+            const baseline = fce.ascent_units * font.logicalPerUnit(fce) * scale * @min(1.0, font.line_height_factor);
+            for (0..2) |i| {
+                const pen = @as(f32, @floatFromInt(i)) * glyph.advance_units * font.logicalPerUnit(fce) * scale;
+                const top_left = Capture.vertices[i * 4].pos;
+                const bottom_right = Capture.vertices[i * 4 + 2].pos;
+                try std.testing.expectApproxEqAbs(pen + glyph.leftBearing * fraction, top_left.x, 0.001);
+                try std.testing.expectApproxEqAbs(baseline - glyph.topBearing * fraction, top_left.y, 0.001);
+                try std.testing.expectApproxEqAbs(glyph.w * fraction, bottom_right.x - top_left.x, 0.001);
+                try std.testing.expectApproxEqAbs(glyph.h * fraction, bottom_right.y - top_left.y, 0.001);
+            }
+        }
     }
 }

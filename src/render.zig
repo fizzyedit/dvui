@@ -200,6 +200,7 @@ pub fn renderText(opts: TextOptions) Backend.GenericError!void {
     var fce = try cw.fonts.getOrCreate(cw.gpa, sized_font);
     // this must be synced with Font.textSizeEx(): Font.logicalPerUnit(fce)
     const logical_per_unit = opts.font.logicalPerUnit(fce);
+    const target_fraction = if (cw.snap_to_pixels) 1.0 else target_size / fce.em_height;
     const fce_ascent = fce.ascent_units * logical_per_unit * opts.rs.s *
         @min(1.0, opts.font.line_height_factor);
 
@@ -310,7 +311,7 @@ pub fn renderText(opts: TextOptions) Backend.GenericError!void {
         x = start.x + pen * opts.rs.s;
         const nextx = start.x + (pen + gi.advance_units * logical_per_unit) * opts.rs.s;
         const origin = if (cw.snap_to_pixels) @round(x) else x;
-        const leftx = origin + gi.leftBearing;
+        const leftx = origin + gi.leftBearing * target_fraction;
 
         if (sel) {
             bytes_seen += std.unicode.utf8CodepointSequenceLength(codepoint) catch unreachable;
@@ -332,7 +333,7 @@ pub fn renderText(opts: TextOptions) Backend.GenericError!void {
             if (opts.ak_opts) |_| {
                 text_info.append(cw.arena(), .{
                     .l = cplen,
-                    .w = if (gi.w == 0) nextx - x else gi.w,
+                    .w = if (gi.w == 0) nextx - x else gi.w * target_fraction,
                     .x = std.math.clamp(x - clipped_rect.x, 0, clipped_rect.w),
                 }) catch {};
             }
@@ -352,7 +353,7 @@ pub fn renderText(opts: TextOptions) Backend.GenericError!void {
             var v: Vertex = undefined;
 
             v.pos.x = leftx;
-            v.pos.y = baseline - gi.topBearing;
+            v.pos.y = baseline - gi.topBearing * target_fraction;
             v.col = if (opts.gradient) |g| .fromColor(g.sample(gradient_bounds, v.pos).opacity(cw.alpha)) else col;
             v.uv = gi.uv;
             builder.appendVertex(v);
@@ -366,13 +367,13 @@ pub fn renderText(opts: TextOptions) Backend.GenericError!void {
                 //log.debug("{d} pad {d} left {d} top {d} w {d} h {d} advance {d}", .{ bytes_seen, pad, gi.f2_leftBearing, gi.f2_topBearing, gi.f2_w, gi.f2_h, gi.f2_advance });
             }
 
-            v.pos.x = origin + gi.leftBearing + gi.w;
+            v.pos.x = leftx + gi.w * target_fraction;
             max_x = v.pos.x;
             v.uv[0] = gi.uv[0] + gi.w / atlas_size.w;
             if (opts.gradient) |g| v.col = .fromColor(g.sample(gradient_bounds, v.pos).opacity(cw.alpha));
             builder.appendVertex(v);
 
-            v.pos.y = baseline - gi.topBearing + gi.h;
+            v.pos.y = baseline + (gi.h - gi.topBearing) * target_fraction;
             sel_max_y = @max(sel_max_y, v.pos.y);
             v.uv[1] = gi.uv[1] + gi.h / atlas_size.h;
             if (opts.gradient) |g| v.col = .fromColor(g.sample(gradient_bounds, v.pos).opacity(cw.alpha));
@@ -391,7 +392,6 @@ pub fn renderText(opts: TextOptions) Backend.GenericError!void {
         }
 
         pen += gi.advance_units * logical_per_unit;
-        x = nextx;
     }
 
     if (opts.background_color) |bgcol| {
