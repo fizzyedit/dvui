@@ -412,13 +412,13 @@ pub fn renderText(opts: TextOptions) Backend.GenericError!void {
 
     if (opts.font.underline) |u| {
         if (u.thick > 0) {
-            var topleft: dvui.Point.Physical = .{ .x = start.x, .y = start.y + fce_ascent + (fce.em_height * 0.2) };
+            var topleft: dvui.Point.Physical = .{ .x = start.x, .y = baseline + target_size * 0.2 };
             if (cw.snap_to_pixels) {
                 // x should already be snapped
                 topleft.y = @round(topleft.y);
             }
 
-            const botright: dvui.Point.Physical = .{ .x = max_x, .y = topleft.y + @max(1.0 * opts.rs.s, fce.em_height * u.thick) };
+            const botright: dvui.Point.Physical = .{ .x = max_x, .y = topleft.y + @max(1.0 * opts.rs.s, target_size * u.thick) };
 
             Rect.Physical.fromPoint(topleft).toPoint(botright).fill(.{}, .{ .color = .{ .color = color }, .fade = 0 });
         }
@@ -426,8 +426,8 @@ pub fn renderText(opts: TextOptions) Backend.GenericError!void {
 
     if (opts.font.strike) |s| {
         if (s.thick > 0) {
-            const thick = @max(1.0 * opts.rs.s, fce.em_height * s.thick);
-            var topleft: dvui.Point.Physical = .{ .x = start.x, .y = start.y + fce_ascent - (fce.em_height * 0.5) - thick * 0.5 };
+            const thick = @max(1.0 * opts.rs.s, target_size * s.thick);
+            var topleft: dvui.Point.Physical = .{ .x = start.x, .y = baseline - target_size * 0.5 - thick * 0.5 };
             if (cw.snap_to_pixels) {
                 // x should already be snapped
                 topleft.y = @round(topleft.y);

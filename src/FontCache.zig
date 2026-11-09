@@ -108,7 +108,6 @@ pub const Entry = struct {
     face: if (impl == .FreeType) c.FT_Face else c.stbtt_fontinfo,
     name: []const u8, // gpa
     m_height_units: f32 = 0,
-    units_per_em_scale: f32 = 0, // nominal points per font unit
     height_units: f32 = 0,
     ascent_units: f32 = 0,
     scaleFactor: f32,
@@ -156,7 +155,12 @@ pub const Entry = struct {
                 return Error.FontError;
             };
 
-            FreeType.intToError(c.FT_Load_Char(face, 'M', c.FT_LOAD_NO_SCALE)) catch return Error.FontError;
+            errdefer _ = c.FT_Done_Face(face);
+
+            FreeType.intToError(c.FT_Load_Char(face, 'M', c.FT_LOAD_NO_SCALE)) catch |err| {
+                dvui.log.warn("Font.Cache.Entry.init() freetype error {any} loading M font {s}\n", .{ err, fname });
+                return Error.FontError;
+            };
             const m_height_units: f32 = @floatFromInt(face.*.glyph.*.metrics.height);
 
             // pixel size for freetype doesn't actually mean you'll get that height, it's more like using pts
@@ -178,7 +182,6 @@ pub const Entry = struct {
 
                 var entry: Entry = .{
                     .m_height_units = m_height_units,
-                    .units_per_em_scale = font.size / m_height_units,
                     .height_units = @floatFromInt(face.*.ascender - face.*.descender),
                     .ascent_units = @floatFromInt(face.*.ascender),
                     .face = face,
@@ -236,7 +239,6 @@ pub const Entry = struct {
                 return error.FontError;
             }
             entry.m_height_units = M.h;
-            entry.units_per_em_scale = font.size / M.h;
             entry.height_units = @floatFromInt(face_ascent - face_descent);
             entry.ascent_units = @floatFromInt(face_ascent);
             entry.scaleFactor = @max(min_pixel_size, @floor(font.size)) / M.h;
