@@ -34,6 +34,10 @@ pub var defaults: Options = .{
 pub const InitOptions = struct {
     selection: ?*Selection = null,
 
+    /// The content width the caller knows this widget will get; used only on
+    /// its first frame or while its width is 0.
+    width_hint: ?f32 = null,
+
     /// If true, break text on space to fit (or any character if width is < 10 Ms)
     break_lines: bool = true,
 
@@ -167,6 +171,7 @@ prevClip: Rect.Physical = .{},
 visual_width: f32 = 0,
 kerning: ?bool,
 break_lines: bool,
+width_hint: ?f32,
 current_line_width: f32 = 0.0, // width of lines if break_lines was false
 touch_edit_just_focused: bool,
 process_events_in_deinit: bool,
@@ -290,6 +295,7 @@ pub fn init(self: *TextLayoutWidget, src: std.builtin.SourceLocation, init_opts:
         // SAFETY: set below
         .state = undefined,
         .break_lines = init_opts.break_lines,
+        .width_hint = init_opts.width_hint,
         .cache_layout = init_opts.cache_layout,
         .kerning = init_opts.kerning,
         .touch_edit_just_focused = init_opts.touch_edit_just_focused,
@@ -1589,7 +1595,8 @@ fn addTextExInner(self: *TextLayoutWidget, text_in: []const u8, action: AddTextE
         // This sequence visually is show too short (full) height and correct
         // larger, which reads as content loading.
 
-        container_width = 1000;
+        // A caller-provided hint lets us wrap at the expected content width.
+        container_width = self.width_hint orelse 1000;
     }
 
     text_loop: while (txt.len > 0) {
@@ -2770,4 +2777,79 @@ test "State left at deinit comes back next frame" {
     try std.testing.expectEqual(@as(u8, 2), fns.seen.click_num);
     try std.testing.expectEqual(dvui.Point.Physical{ .x = 5, .y = 6 }, fns.seen.click_num_pt);
     try std.testing.expectEqual(true, fns.seen.te_focus_on_touchdown);
+}
+
+const WidthHintTest = struct {
+    var width: f32 = 220;
+    var hint: ?f32 = null;
+    var height: f32 = 0;
+    var content_width: f32 = 0;
+
+    fn frame() !dvui.App.Result {
+        var box = dvui.box(@src(), .{ .dir = .vertical }, .{
+            .rect = .{ .w = width, .h = 1000 },
+            .padding = .{},
+        });
+        defer box.deinit();
+        var tl = dvui.textLayout(@src(), .{ .width_hint = hint }, .{
+            .expand = .horizontal,
+            .padding = .{},
+            .border = .{},
+        });
+        defer tl.deinit();
+        const paragraph =
+            "words words words words words words words words words words " ++
+            "words words words words words words words words words words " ++
+            "words words words words words words words words words words " ++
+            "words words words words words words words words words words " ++
+            "words words words words words words words words words words " ++
+            "words words words words words words words words words words " ++
+            "words words words words words words words words words words " ++
+            "words words words words words words words words words words " ++
+            "words words words words words words words words words words " ++
+            "words words words words words words words words words words ";
+        tl.addText(paragraph, .{});
+        tl.addTextDone(.{});
+        height = tl.data().min_size.h;
+        content_width = tl.data().contentRect().w;
+        return .ok;
+    }
+};
+
+test "a hinted TextLayout's first frame has its settled height" {
+    for ([_]?f32{ 220, null }) |hint| {
+        var t = try dvui.testing.init(.{ .window_size = .{ .w = 400, .h = 1000 } });
+        defer t.deinit();
+        WidthHintTest.width = 220;
+        WidthHintTest.hint = hint;
+        _ = try dvui.testing.step(WidthHintTest.frame);
+        const first_height = WidthHintTest.height;
+        try dvui.testing.settle(WidthHintTest.frame);
+        if (hint != null) {
+            try std.testing.expectApproxEqAbs(first_height, WidthHintTest.height, 0.5);
+        } else {
+            try std.testing.expect(first_height != WidthHintTest.height);
+        }
+    }
+}
+
+test "the hint is ignored after the first frame" {
+    var t = try dvui.testing.init(.{ .window_size = .{ .w = 400, .h = 1000 } });
+    defer t.deinit();
+    WidthHintTest.width = 220;
+    WidthHintTest.hint = 220;
+    _ = try dvui.testing.step(WidthHintTest.frame);
+    _ = try dvui.testing.step(WidthHintTest.frame);
+    const narrow_height = WidthHintTest.height;
+    WidthHintTest.width = 300;
+    _ = try dvui.testing.step(WidthHintTest.frame);
+    try std.testing.expectApproxEqAbs(@as(f32, 300), WidthHintTest.content_width, 0.5);
+    const resized_height = WidthHintTest.height;
+    try std.testing.expect(resized_height < narrow_height);
+    try dvui.testing.settle(WidthHintTest.frame);
+    try std.testing.expectApproxEqAbs(resized_height, WidthHintTest.height, 0.5);
+    // Compare with the same layout using its actual width without any hint.
+    WidthHintTest.hint = null;
+    _ = try dvui.testing.step(WidthHintTest.frame);
+    try std.testing.expectApproxEqAbs(resized_height, WidthHintTest.height, 0.5);
 }
