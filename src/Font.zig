@@ -682,3 +682,39 @@ test "an underline sits on the drawn baseline" {
         try std.testing.expectEqual(@round(baseline + 10 * scale * 0.2), Capture.vertices[0].pos.y);
     }
 }
+
+test "a strike line sits on the drawn baseline" {
+    if (dvui.backend.kind != .testing) return error.SkipZigTest;
+    var t = try dvui.testing.init(.{ .window_size = .{ .w = 400, .h = 200 } });
+    defer t.deinit();
+    const Capture = struct {
+        var vertices: [8]dvui.Vertex = undefined;
+        var count: usize = 0;
+        fn capture(v: []const dvui.Vertex) void {
+            const len = @min(v.len, vertices.len - count);
+            @memcpy(vertices[count..][0..len], v[0..len]);
+            count += len;
+        }
+    };
+    t.backend.triangle_capture = Capture.capture;
+    defer t.backend.triangle_capture = null;
+    t.window.snap_to_pixels = true;
+    const font = Font.find(.{ .family = "Vera Sans", .size = 10 }).withStrike(.{ .thick = 0.1 });
+    for ([_]f32{ 1, 1.25, 1.5, 2, 2.75, 3 }) |scale| {
+        t.window.content_scale = scale;
+        t.window.natural_scale = scale;
+        Capture.count = 0;
+        t.window.render_target.rendering = true;
+        try dvui.renderText(.{
+            .font = font,
+            .text = "H",
+            .rs = .{ .r = .{ .w = 400, .h = 200 }, .s = scale },
+            .color = .white,
+        });
+        t.window.render_target.rendering = false;
+        try std.testing.expectEqual(@as(usize, 8), Capture.count);
+        const baseline = Capture.vertices[6].pos.y;
+        const thick = @max(scale, 10 * scale * 0.1);
+        try std.testing.expectEqual(@round(baseline - 10 * scale * 0.5 - thick * 0.5), Capture.vertices[0].pos.y);
+    }
+}
