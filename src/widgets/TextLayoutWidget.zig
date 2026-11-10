@@ -1549,8 +1549,8 @@ fn addTextExInner(self: *TextLayoutWidget, text_in: []const u8, action: AddTextE
     var ret: ?HoverMatch = null;
     const cw = dvui.currentWindow();
 
-    // clip to content rect for all text
-    _ = dvui.clip(self.data().contentRectScale().r);
+    // clip to the padding, not the advances, because a glyph's ink may lie left of its pen (a leading j) or past its last advance (an italic f).
+    _ = dvui.clip(self.data().backgroundRectScale().r);
     self.newline = false;
 
     var txt = dvui.toUtf8(cw.lifo(), text_in) catch |err| blk: {

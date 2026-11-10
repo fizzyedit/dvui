@@ -584,7 +584,7 @@ test "drawn glyphs follow the pen" {
     const Capture = struct {
         var vertices: [160]dvui.Vertex = undefined;
         var count: usize = 0;
-        fn capture(v: []const dvui.Vertex) void {
+        fn capture(v: []const dvui.Vertex, _: ?dvui.Rect.Physical) void {
             count = @min(v.len, vertices.len);
             @memcpy(vertices[0..count], v[0..count]);
         }
@@ -655,7 +655,7 @@ test "an underline sits on the drawn baseline" {
     const Capture = struct {
         var vertices: [8]dvui.Vertex = undefined;
         var count: usize = 0;
-        fn capture(v: []const dvui.Vertex) void {
+        fn capture(v: []const dvui.Vertex, _: ?dvui.Rect.Physical) void {
             const len = @min(v.len, vertices.len - count);
             @memcpy(vertices[count..][0..len], v[0..len]);
             count += len;
@@ -690,7 +690,7 @@ test "a strike line sits on the drawn baseline" {
     const Capture = struct {
         var vertices: [8]dvui.Vertex = undefined;
         var count: usize = 0;
-        fn capture(v: []const dvui.Vertex) void {
+        fn capture(v: []const dvui.Vertex, _: ?dvui.Rect.Physical) void {
             const len = @min(v.len, vertices.len - count);
             @memcpy(vertices[count..][0..len], v[0..len]);
             count += len;

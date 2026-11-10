@@ -132,7 +132,8 @@ pub fn draw(self: *LabelWidget) void {
     const sel_start = self.init_options.sel_start;
     const sel_end = self.init_options.sel_end;
     const sel_color = self.init_options.sel_color;
-    const oldclip = if (rot == 0.0) dvui.clip(rs.r) else dvui.clipGet();
+    // clip to the padding, not the advances, because a glyph's ink may lie left of its pen (a leading j) or past its last advance (an italic f).
+    const oldclip = dvui.clip(self.data().backgroundRectScale().r);
     var iter = std.mem.splitScalar(u8, self.label_str, '\n');
     var line_height_adj: ?f32 = null;
     var first: bool = true;
@@ -248,4 +249,43 @@ pub fn deinit(self: *LabelWidget) void {
 
 test {
     @import("std").testing.refAllDecls(@This());
+}
+
+test "a label's ink left of its pen is not clipped" {
+    if (dvui.backend.kind != .testing) return error.SkipZigTest;
+    var t = try dvui.testing.init(.{ .window_size = .{ .w = 200, .h = 100 } });
+    defer t.deinit();
+    t.window.content_scale = 2;
+    t.window.natural_scale = 2;
+    t.window.snap_to_pixels = true;
+    const Frame = struct {
+        var drawing: bool = false;
+        var pen_x: f32 = 0;
+        var ink_x: f32 = std.math.inf(f32);
+        var clip_x: f32 = -std.math.inf(f32);
+
+        fn capture(vertices: []const dvui.Vertex, clipr: ?dvui.Rect.Physical) void {
+            if (!drawing) return;
+            for (vertices) |vertex| ink_x = @min(ink_x, vertex.pos.x);
+            if (clipr) |clip| clip_x = @max(clip_x, clip.x);
+        }
+
+        fn frame() !dvui.App.Result {
+            ink_x = std.math.inf(f32);
+            clip_x = -std.math.inf(f32);
+            var lw: LabelWidget = undefined;
+            lw.initNoFmt(@src(), "j", .{}, .{ .font = dvui.Font.find(.{ .family = "Vera Sans", .size = 14 }) });
+            defer lw.deinit();
+            pen_x = lw.data().contentRectScale().r.x;
+            drawing = true;
+            lw.draw();
+            drawing = false;
+            return .ok;
+        }
+    };
+    t.backend.triangle_capture = Frame.capture;
+    defer t.backend.triangle_capture = null;
+    try dvui.testing.settle(Frame.frame);
+    try std.testing.expect(Frame.ink_x < Frame.pen_x);
+    try std.testing.expect(Frame.ink_x >= Frame.clip_x);
 }
