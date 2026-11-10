@@ -1681,10 +1681,8 @@ fn addTextExInner(self: *TextLayoutWidget, text_in: []const u8, action: AddTextE
 
         if (self.break_lines) blk: {
 
-            // try to break on space if:
-            // - slice ended due to width (not newline)
-            // - linewidth is long enough (otherwise too narrow to break on space)
-            if (end < txt.len and !self.newline and linewidth > (10 * msize.w)) {
+            // Try to break on space if the slice ended due to width (not newline).
+            if (end < txt.len and !self.newline) {
                 // now we are under the length limit but might be in the middle of a word
                 // look one char further because we might be right at the end of a word
                 const spaceIdx = std.mem.findLastLinear(u8, txt[0 .. end + 1], " ");
@@ -2852,4 +2850,32 @@ test "the hint is ignored after the first frame" {
     WidthHintTest.hint = null;
     _ = try dvui.testing.step(WidthHintTest.frame);
     try std.testing.expectApproxEqAbs(resized_height, WidthHintTest.height, 0.5);
+}
+
+test "narrow text wraps at word starts" {
+    var t = try dvui.testing.init(.{ .window_size = .{ .w = 300, .h = 200 } });
+    defer t.deinit();
+
+    const fns = struct {
+        var last_line_start: usize = 0;
+        var last_line: usize = 0;
+
+        fn frame() !dvui.App.Result {
+            var tl = dvui.textLayout(@src(), .{}, .{
+                .min_size_content = .{ .w = 100 },
+                .max_size_content = .width(100),
+            });
+            defer tl.deinit();
+            tl.addText("Great Blue Heron", .{});
+            tl.addTextDone(.{});
+            last_line_start = tl.first_byte_in_line;
+            last_line = tl.line;
+            return .ok;
+        }
+    };
+
+    try dvui.testing.settle(fns.frame);
+    // There are two lines, so checking the final line checks every wrapped start.
+    try std.testing.expectEqual(@as(usize, 1), fns.last_line);
+    try std.testing.expect(fns.last_line_start == 6 or fns.last_line_start == 11);
 }
