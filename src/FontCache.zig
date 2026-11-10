@@ -253,6 +253,11 @@ pub const Entry = struct {
             break :blk entry;
         };
 
+        // The branch's errdefer covers its errors; this one covers the glyphs below.
+        errdefer if (impl == .FreeType) {
+            _ = c.FT_Done_Face(self.face);
+        };
+
         // Pre-generate the ascii glyphs
         //std.debug.print("char,codepoint,hx,w,hy,h,adv\n", .{});
         for (0..self.glyph_info_ascii.len) |i| {
